@@ -1,0 +1,927 @@
+---
+title: "Microbial Bile Acid Analysis - in vitro BA incubation in 37 sFMT strains"
+author: "Min Soo Kim"
+date: '`r format(Sys.time(), "%Y-%m-%d %H:%M")`'
+output: 
+  html_document:
+    code_folding: show
+    theme: spacelab
+    number_sections: true
+    highlight: monochrome
+    fig_width: 11
+    fig_height: 8.5
+    toc: true
+    toc_float: true
+---
+# Experiment description
+
+This experiment measured bile acids in media containing 37 strains in Susan's sFMT community that was incubated with the following bile acids:CA-d5, DCA, CDCA-d5, LCA, GCA, TCA. The metabolomics experiment was run on ThermoFisher TSQ and processed on the Quan Browser in XCalibur
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Set up environment
+```{r, echo=FALSE}
+library(data.table)
+library(tidyverse)
+library(readxl)
+library(qiime2R)
+library(ggbreak)
+library(vegan)
+library(ape)
+library(gplots)
+library(ggplot2)
+library(ggtree)
+library(ggnewscale)
+library(stats)
+library(patchwork)
+#library(ggforce) #needs dependencies. ask jordan to download
+theme_set(theme_q2r())
+
+setwd("/home/msk5737/BileAcids/221211_BA_sFMT_invitro/")
+
+```
+
+## Read in raw data make data tables
+
+# Read in the raw data and append sample and BA metadata
+```{r}
+
+#read in raw data
+Input<-readxl::excel_sheets("220117_BA_sFMT_invitro_QUAN_Short.XLS")
+Input<-Input[!Input %in% c("Component","mdlCalcs")]
+
+Rawdata<-
+lapply(Input, function(i){
+  read_excel("220117_BA_sFMT_invitro_QUAN_Short.XLS", sheet=i, skip=4) %>%
+    dplyr::select(Filename, Area) %>%
+    mutate(FeatureID=i)
+    })
+
+
+Rawdata<-Rawdata %>% do.call(bind_rows, .)
+
+Rawdata<-
+Rawdata %>%
+  filter(!is.na(Filename) & !grepl("^Created|^User|^Quantis", Filename)) 
+
+#read in BA metadata
+BAinfo <- read_excel("BAmetadata.xlsx", sheet = 1) 
+
+metadata<-
+  BAinfo %>% 
+  dplyr::select(FeatureID=QuanID, Index, Cal, IS, Detected)
+
+metadata<-
+metadata %>%
+  left_join(metadata %>% dplyr::select(Cal=Index, Calibrator=FeatureID)) %>%
+  left_join(metadata %>% dplyr::select(IS=Index, InternalStandard=FeatureID))
+
+
+#clean up the raw data and add meaningful column titles
+Rawdata<-Rawdata %>% mutate(Area=as.numeric(Area))
+
+data<-
+Rawdata %>%
+  left_join(metadata %>% dplyr::select(FeatureID, InternalStandard, Detected)) %>%
+  left_join(
+  Rawdata %>%
+  filter(FeatureID %in% metadata$InternalStandard) %>%
+  dplyr::rename(InternalStandard=FeatureID, IS_Area=Area)
+  ) 
+
+data<-
+data %>%
+  mutate(Relative_Ratio=Area/IS_Area)
+
+#take out undetected/unquantitated compounds
+data <-
+  data%>% 
+  filter(Detected == "Y") %>% 
+  dplyr::select(!Detected)
+
+```
+
+# Make cal curves and quantitate BAs
+```{r}
+#make a table of cals and their concentrations
+CalConc<-tibble(Filename=paste0("cal",1:10), StdConc=c(0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10))
+
+#pull out the cals from data
+stds<-
+  data %>%
+  filter(grepl("^cal", Filename)) %>%
+  left_join(CalConc)
+
+#plot out the cals 
+stds %>%
+  ggplot(aes(x=Relative_Ratio, y=StdConc)) +
+  geom_point() +
+  facet_wrap(~FeatureID, scales="free")
+
+#fit a linear curve on the plotted cals
+stds %>%
+  filter(FeatureID %in% metadata$Calibrator) %>%
+  ggplot(aes(x=Relative_Ratio, y=StdConc)) +
+  geom_point() +
+  geom_smooth(method="lm") +
+  facet_wrap(~FeatureID, scales="free")
+
+#pull slopes to use for quantatitation
+#note, come back and fix to not force through zero, or use weighted?
+CalCurves<-
+stds %>%
+  filter(FeatureID %in% metadata$Calibrator) %>%
+  group_by(FeatureID) %>%
+  summarize(
+    N_concentrations=n(),
+    Slope=lm(Relative_Ratio~0+StdConc)$coefficients,
+    R2=lm(Relative_Ratio~0+StdConc) %>% broom::glance() %>% pull(r.squared)
+  )
+
+#quantitiate BAs using the calculated slopes of the cal curves
+data<-
+data %>% 
+  left_join(metadata %>% dplyr::select(FeatureID, Calibrator)) %>%
+    left_join(CalCurves %>% dplyr::select(Calibrator=FeatureID, Slope)) %>%
+  mutate(Concentration_uM=Relative_Ratio*Slope) %>%
+  mutate(Concentration_zerofill=if_else(is.na(Concentration_uM), 0, Concentration_uM))
+
+data<-
+data %>%
+  dplyr::select(Filename, FeatureID, Concentration_uM=Concentration_zerofill)
+
+#merge in sample metadata
+mergeddata<-
+data %>%
+  left_join(
+    read_excel("220111_BA_sFMT_invitro_samplemetadata.xlsx") %>% 
+      dplyr::select(Filename=SampleID, Group, ReplicateNum) %>%
+      mutate(Filename=as.character(Filename))
+  ) %>%
+  filter(!grepl("^cal", Filename)) %>% 
+  filter(!grepl("blank", Filename))
+
+mergeddata<-
+  mergeddata %>%
+  filter(!grepl("blank", Filename))
+
+
+mergeddata<-
+  mergeddata %>%
+  mutate(SampleID=paste(Group,ReplicateNum, sep="_"))
+```
+
+# Clean up the dataset to only show concentration and log2conc
+```{r}
+
+#combine coeluters
+mergeddata <- 
+  mergeddata %>%
+  mutate(FeatureID=gsub("TCA","TCA/THCA", FeatureID, fixed = TRUE)) %>%
+  mutate(FeatureID=gsub("TUDCA","TUDCA/THDCA", FeatureID, fixed = TRUE)) %>%
+  mutate(FeatureID=gsub("TDCA","TDCA/TCDCA", FeatureID, fixed = TRUE)) %>%  
+  mutate(FeatureID=gsub("GUDCA","GUDCA/GHDCA", FeatureID, fixed = TRUE)) %>%  
+  #mutate(FeatureID=gsub("UDCA","UDCA/HDCA", FeatureID, fixed = TRUE)) %>%  
+  mutate(FeatureID=gsub("12-oxoDCA","12-oxoDCA/7-oxoCDCA/6-oxoHDCA", FeatureID, fixed = TRUE))
+
+#make a data matrix by pivot_wider
+BA_wide<-
+  mergeddata %>%
+  #filter(!grepl("Group", Group)) %>%  #take out when i have subgroups data
+  dplyr::select(FeatureID, SampleID, Concentration_uM) %>%
+  pivot_wider(names_from = SampleID, values_from = Concentration_uM) %>%
+  as.data.frame() %>%
+  column_to_rownames("FeatureID")
+
+#QC Needed!
+
+
+BA_wide<-BA_wide[rowSums(BA_wide)>0,]
+
+BA_wide<-
+  BA_wide %>%
+  rownames_to_column("FeatureID") %>%
+  pivot_longer(!FeatureID, names_to = "SampleID", values_to="Concentration_uM") %>%
+  left_join(
+    BA_wide%>%
+      rownames_to_column("FeatureID") %>%
+      pivot_longer(!FeatureID, names_to = "SampleID", values_to="Concentration_uM") %>%
+      group_by(FeatureID) %>%
+      filter(Concentration_uM==min_nonzero(Concentration_uM)) %>%
+      ungroup() %>%
+      dplyr::select(FeatureID, MinConcentration=Concentration_uM) %>%
+      distinct()
+  ) %>%
+  mutate(log2Conc=log2(Concentration_uM + (2/3*(MinConcentration)))) %>%
+  dplyr::select(FeatureID, SampleID, log2Conc) %>%
+  pivot_wider(names_from = SampleID, values_from = log2Conc)
+
+#make a data table with pivot_longer
+BA_long <- 
+  BA_wide %>% 
+  pivot_longer(!FeatureID, names_to = "SampleID", values_to="log2Conc") %>% 
+  left_join(mergeddata) %>% 
+  dplyr::select(SampleID, Group, ReplicateNum, FeatureID, Concentration_uM, log2Conc)
+
+
+BA_long %>% pivot_wider(c(FeatureID), names_from = SampleID, values_from = log2Conc)
+
+BAorder<-
+  BA_long %>% 
+  left_join(BAinfo %>% dplyr::select(FeatureID=QuanID, BAorder)) %>% 
+  group_by(FeatureID) %>% 
+  summarize(mean=mean(BAorder)) %>% 
+  arrange(mean) %>% 
+  pull(FeatureID)
+
+BAorderRev <-
+  mergeddata %>% 
+  left_join(BAinfo %>% dplyr::select(FeatureID=QuanID, BAorder)) %>%   
+  group_by(FeatureID) %>% 
+  summarize(mean=mean(BAorder)) %>% 
+  arrange(desc(mean)) %>% 
+  pull(FeatureID)
+    
+
+write_csv(BA_long, "230127_BA_sFMT_invitro_ConcData.csv")
+
+#save an extra file of just JEB00356 for jingcheng
+#data_clean %>% 
+#  filter(Group == "JEB00356") %>% 
+#  write_csv(., "JEB00356_BileAcids.csv")
+
+
+```
+
+## What are the most abundant bile acids?
+```{r}
+BA_long %>%
+  group_by(FeatureID) %>% 
+  filter(!is.na(Concentration_uM)) %>% 
+  summarise(mean=mean(Concentration_uM),median=median(Concentration_uM),min=min(Concentration_uM),max=max(Concentration_uM),sd=sd(Concentration_uM),n=n()) %>% 
+  arrange(desc(mean)) %>%
+  interactive_table()
+
+BA_long %>%
+  arrange(Group, FeatureID) %>%
+  group_by(FeatureID) %>% 
+  filter(!is.na(Concentration_uM)) %>% 
+  summarise(mean=mean(Concentration_uM),median=median(Concentration_uM),min=min(Concentration_uM),max=max(Concentration_uM),sd=sd(Concentration_uM),n=n()) %>% 
+  arrange(desc(mean)) %>%
+  ggplot(aes(x=FeatureID,y=mean))+
+  geom_bar(stat="identity", color="black")+
+  theme_q2r()+
+  theme(axis.text.x = element_text(angle = 45,hjust = 1))
+```
+
+## Make some exploratory figures - PCA, biplot, indiv conc plots
+
+#biplot and skim data
+```{r, eval=FALSE}
+pc<-
+BA_wide %>%
+  column_to_rownames("FeatureID") %>%
+  t() %>%
+  prcomp()
+
+biplot(pc)
+
+
+pc$x %>%
+  as.data.frame() %>%
+  rownames_to_column("StrainID") %>%
+  separate(StrainID, c("StrainID", "Replicate"), sep="_") %>%
+  ggplot(aes(x=PC1, y=PC2, color=StrainID)) +
+  geom_point() +
+  geom_line(aes(group=StrainID))
+
+
+
+BA_wide %>%
+  pivot_longer(!FeatureID) %>%
+  separate(name, c("StrainID", "Replicate"), sep="_") %>%
+  filter(FeatureID=="TCA") %>%
+  ggplot(aes(x=StrainID, y=value)) +
+  geom_point() +
+  theme(axis.text.x=element_text(angle=45, hjust=1)) +
+  facet_wrap(~FeatureID, scales="free")
+
+
+
+BA_wide %>%
+  pivot_longer(!FeatureID) %>%
+  separate(name, c("StrainID", "Replicate"), sep="_") %>%
+  filter(FeatureID=="TDCA") %>%
+  ggplot(aes(x=StrainID, y=value)) +
+  geom_point() +
+  theme(axis.text.x=element_text(angle=45, hjust=1)) +
+  facet_wrap(~FeatureID, scales="free")
+
+pdf("skim.pdf", height=8, width=12, useDingbats=F)
+for (analyte in BA_wide$FeatureID){
+ p<-
+   BA_wide %>%
+  pivot_longer(!FeatureID) %>%
+  separate(name, c("StrainID", "Replicate"), sep="_") %>%
+  filter(FeatureID==analyte) %>%
+  ggplot(aes(x=StrainID, y=value, color=StrainID)) +
+   stat_summary(geom="errorbar", width=0.2) +
+   stat_summary(geom="point") +
+  #geom_jitter(width=0.2, heigh=0) +
+  theme(axis.text.x=element_text(angle=45, hjust=1)) +
+  facet_wrap(~FeatureID, scales="free") +
+   theme(legend.position = "none")
+ print(p)
+}
+dev.off()
+
+BA_wide %>%
+  pivot_longer(!FeatureID) %>%
+  separate(name, c("StrainID", "Replicate"), sep="_") %>%
+  filter(FeatureID %in% c("TCA/THCA","12-oxoDCA/7-oxoCDCA/6-oxoHDCA+5")) %>%
+  mutate(FeatureID=factor(FeatureID, levels=c("TCA/THCA","12-oxoDCA/7-oxoCDCA/6-oxoHDCA+5"))) %>%
+  ggplot(aes(x=StrainID, y=2^value)) +
+  stat_summary(geom="errorbar", width=0.6) +
+  stat_summary(geom="point") +
+  facet_grid(FeatureID~., scales="free") +
+  theme(axis.text.x=element_text(angle=45, hjust=1)) +
+  xlab("") +
+  ylab("Bile Acid Concentration (µM)")
+ggsave("prelim_interest.pdf", height=3, width=4, useDingbats=F)
+
+
+
+```
+
+#heatmaps and bubble plots
+```{r}
+
+logBA_StBaseline <-
+  BA_long %>%
+  filter(Group == "Sterile") %>% 
+  group_by(FeatureID, Group) %>%
+  summarise(SterileLogConc=mean(log2Conc)) %>%
+  arrange(desc(SterileLogConc))
+
+BA_log2FC <-
+  BA_long%>%
+  group_by(FeatureID) %>% 
+  left_join(logBA_StBaseline %>% dplyr::select(FeatureID, SterileLogConc)) %>%
+  mutate(log2FC = log2Conc - SterileLogConc)
+
+
+clust<-
+  BA_log2FC %>%
+  dplyr::select(SampleID, FeatureID, log2FC) %>%
+  pivot_wider(names_from = FeatureID, values_from = log2FC) %>%
+  column_to_rownames("SampleID") %>%
+  t() %>%
+  dist() %>%
+  hclust(., method="average")
+
+#log2fc heatmap of indiv strains only
+BA_log2FC %>%
+  filter(!grepl("Group", Group)) %>% 
+  mutate(FeatureID=factor(FeatureID, levels = BAorderRev)) %>%
+  #mutate(Group=factor(Group, levels=c("Sterile", "CA", "DCA", "CDCA", "LCA", "BApool", "EL_BApool"))) %>% 
+  ggplot(aes(x=SampleID, y=FeatureID, fill=log2FC)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "cornflowerblue", high="indianred", name="log2(Abundance)") +
+  facet_wrap(nrow = 1,~Group, scales="free_x") +
+  theme_q2r() +
+  theme(axis.text.x=element_blank(), axis.ticks.x=element_blank()) +
+  xlab("") +
+  ylab("")
+ggsave("figures/BAheatmap_log2fc_indivstrains.pdf", height=10, width=25, useDingbats=F)
+
+
+BA_log2FC %>%
+  filter(!grepl("Group", Group)) %>% 
+  mutate(FeatureID=factor(FeatureID, clust$labels[clust$order])) %>%
+  ggplot(aes(x=SampleID, y=FeatureID)) +
+  geom_point(aes(size = log2Conc, fill=log2FC), shape=21) +
+  scale_fill_gradient2(low = "cornflowerblue", high="indianred", name="log2FC") +
+  scale_size_continuous(range = c(0,6)) +
+  ggtitle("log2FC vs sterile")+
+  theme_q2r() +
+  theme(axis.text.x = element_blank(), axis.ticks.x=element_blank()) +
+  facet_wrap(nrow = 1,~Group, scales="free_x") +
+  xlab("") +
+  ylab("")
+ggsave("figures/BAbubblemap_log2fc_indivstrains.pdf", height=10, width=25, useDingbats=F)
+
+#log2fc heatmap of groups only
+BA_log2FC %>%
+  filter(grepl("Group", Group) | Group %in% c("Sterile", "Pool")) %>% 
+  mutate(FeatureID=factor(FeatureID, clust$labels[clust$order])) %>%
+  #mutate(Group=factor(Group, levels=c("Sterile", "CA", "DCA", "CDCA", "LCA", "BApool", "EL_BApool"))) %>% 
+  ggplot(aes(x=SampleID, y=FeatureID, fill=log2FC)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "cornflowerblue", high="indianred", name="log2(Abundance)") +
+  facet_wrap(nrow = 1,~Group, scales="free_x") +
+  theme_q2r() +
+  theme(axis.text.x=element_blank(), axis.ticks.x=element_blank()) +
+  xlab("") +
+  ylab("")
+ggsave("figures/BAheatmap_log2fc_groups.pdf", height=10, width=25, useDingbats=F)
+
+BA_log2FC %>%
+  filter(grepl("Group", Group) | Group %in% c("Sterile", "Pool")) %>% 
+  mutate(FeatureID=factor(FeatureID, clust$labels[clust$order])) %>%
+  ggplot(aes(x=SampleID, y=FeatureID)) +
+  geom_point(aes(size = log2Conc, fill=log2FC), shape=21) +
+  scale_fill_gradient2(low = "cornflowerblue", high="indianred", name="log2FC") +
+  scale_size_continuous(range = c(0,6)) +
+  ggtitle("log2FC vs sterile")+
+  theme_q2r() +
+  theme(axis.text.x = element_blank(), axis.ticks.x=element_blank()) +
+  facet_wrap(nrow = 1,~Group, scales="free_x") +
+  xlab("") +
+  ylab("")
+ggsave("figures/BAbubblemap_log2fc_groups.pdf", height=10, width=25, useDingbats=F)
+
+
+
+```
+
+#PCA
+```{r}
+BA_PCA<-
+  BA_long %>%
+  filter(!grepl("Group", Group)) %>% 
+  dplyr::select(SampleID, FeatureID, log2Conc) %>%
+  pivot_wider(names_from = "FeatureID", values_from = log2Conc) %>%
+  as.data.frame() %>%
+  column_to_rownames("SampleID") %>%
+  prcomp()
+
+loads<-
+  BA_PCA$rotation %>% 
+  as.data.frame() %>%
+  rownames_to_column("FeatureID")%>%
+  mutate(hyp=sqrt(PC1^2+PC2^2)) %>%
+  top_n(15, hyp) %>%
+  mutate(Group=NA)
+
+scaler=20
+
+BA_PCA$x %>%
+  as.data.frame() %>%
+  rownames_to_column("SampleID") %>%
+  mutate(Group=gsub("_\\d+","", SampleID)) %>%
+  ggplot(aes(x=PC1, y=PC2, fill=Group)) +
+  geom_point(shape=21, size=3) +
+  scale_fill_discrete()+
+  geom_segment(data=loads, aes(x=0, xend=PC1*scaler, y=0, yend=PC2*scaler), arrow = arrow(length = unit(0.1,"cm"), type="closed")) +
+  ggrepel::geom_text_repel(data=loads, aes(x=PC1*scaler, y=PC2*scaler, label=FeatureID)) +
+  theme_q2r()
+```
+
+## Phylogeny tree
+# make a tree
+```{r}
+straintree <- read.tree("/data/shared_resources/genomes/faas_phylophlan/RAxML_bestTree.faas_refined.tre")
+
+sFMT_tree_k <- drop.tip(straintree, straintree$tip.label[!straintree$tip.label %in% BA_long$Group])
+
+sFMT_tree_k %>% 
+  ggtree::ggtree() + 
+  ggtree::geom_tiplab()
+```
+
+# correlation between distance matrices (metabolite vs cophenetic)
+```{r}
+#pulling euclidean distance (cophenetic distance)
+
+#correlation between distance matrices (metabolites vs phylogeny) procrust
+
+#this analysis only contains indiv strain data
+
+BA_PCA_dist<-
+  BA_long %>%
+  filter(grepl("JEB", Group)) %>% 
+  group_by(FeatureID, Group) %>%
+  summarise(MeanLogConc=mean(log2Conc)) %>%
+  dplyr::select(Group, FeatureID, MeanLogConc) %>%
+  pivot_wider(names_from = "FeatureID", values_from = MeanLogConc) %>%
+  as.data.frame() %>%
+  column_to_rownames("Group") %>%
+  dist() %>% 
+  as.matrix()
+
+
+BA_cophenetic <-
+  sFMT_tree_k %>% 
+  cophenetic.phylo()
+
+cor(as.vector(BA_PCA_dist), as.vector(BA_cophenetic))
+#0.1818916
+
+```
+
+## BA labeling
+```{r}
+
+BA_long_labelled <-
+  BA_long %>% 
+  left_join(BAinfo %>% dplyr::select(FeatureID=QuanID, Labeling)) %>% 
+  filter(Labeling == "Labeled")
+
+
+
+BA_long_unlabelled <-
+  BA_long %>% 
+  left_join(BAinfo %>% dplyr::select(FeatureID=QuanID, Labeling)) %>% 
+  filter(Labeling == "Unlabeled")
+
+```
+
+
+##Groups data
+I identified 12-oxoDCA to be an interesting target because it is only produced by the pool but not by individual strains
+
+#random forest to identify the important strains in production of 12-oxoDCA+5
+```{r}
+#read in the identifiers for the groups - strain members in each group
+groups<-read_excel("/home/msk5737/BileAcids/221211_BA_sFMT_invitro/220111_BA_sFMT_invitro_samplemetadata.xlsx", sheet = 3)
+
+#make a table of strain members in every group
+grmem<-
+  groups %>% 
+  t() %>%
+  as.data.frame() %>%
+  rownames_to_column("Group") %>%
+  pivot_longer(!Group) %>%
+  dplyr::select(Group, StrainID=value) %>%
+  filter(!is.na(StrainID)) %>%
+  bind_rows(
+    tibble(Group=groups$Pool, StrainID=groups$Pool)
+  )
+
+#clean up table
+grmem <-
+  grmem %>% 
+  mutate(jnk=1) %>% 
+  pivot_wider(names_from = Group, values_from = "jnk", values_fill = 0) %>% bind_cols(., tibble(Sterile=0)) %>% 
+  pivot_longer(!StrainID, names_to = "Group", values_to = "Present") %>%
+  mutate(Group=factor(Group, levels=c("Sterile", grep("^JEB", unique(grmem$Group), value=TRUE), "Pool", grep("^Group", unique(grmem$Group), value=TRUE))))
+
+#set prediction variable for random forest
+RFpred <-
+  grmem %>%
+  filter(grepl("Group", Group)) %>%
+  pivot_wider(names_from = "StrainID", values_from = "Present") %>%
+  as.data.frame() %>%
+  column_to_rownames("Group")
+
+#set response variable for random forest
+RFresp <-
+BA_long %>%
+  filter(!Group %in% c("JEB00356", "JEB00054")) %>%
+  filter(FeatureID=="12-oxoDCA/7-oxoCDCA/6-oxoHDCA+5") %>%
+  filter(grepl("Group", Group)) %>%
+  group_by(Group) %>%
+  summarize(Concentration_uM=mean(Concentration_uM))
+  
+RFpred <- 
+  RFpred[RFresp$Group,]
+
+#run random forest
+RFfit <- 
+  randomForest::randomForest(RFpred, RFresp$Concentration_uM, importance=TRUE)
+
+```
+
+# make an upset plot
+```{r}
+
+#order the strains in the order of importance for presence of 12-oxoDCA+5
+ImpOrder <- 
+  RFfit$importance %>%
+  as.data.frame() %>%
+  rownames_to_column("StrainID") %>%
+  arrange(desc(`%IncMSE`))
+
+#make the bottom portion of the upset plot
+presence_hm<-
+grmem %>%
+  left_join(ImpOrder) %>% 
+  mutate(ImpScore = case_when(Present == 0 ~ NA,
+                              Present != 0 ~ `%IncMSE`)) %>% 
+  ggplot(aes(x=Group, y=StrainID, fill=ImpScore)) +
+  geom_tile() +
+  theme(axis.text.x=element_text(angle=45, hjust=1)) +
+  scale_fill_gradient(high= "black", low= "grey96", na.value = c("white")) +
+  #theme(legend.position="none") +
+  theme(axis.text.x=element_blank()) +
+  theme(axis.ticks.x=element_blank())
+
+#make the top portion of the upset plot (bar plot)
+oxoDCA_bar<-
+BA_long %>%
+  filter(!Group %in% c("JEB00356", "JEB00054")) %>%
+  filter(FeatureID=="12-oxoDCA/7-oxoCDCA/6-oxoHDCA+5") %>%
+  mutate(Group=factor(Group, levels=levels(grmem$Group))) %>%
+  ggplot(aes(x=Group, y=Concentration_uM)) +
+  stat_summary(geom="bar") +
+  stat_summary(geom="errorbar", width=0, fun.data = mean_se) +
+  theme(axis.text.x=element_text(angle=45, hjust=1)) +
+  theme(axis.text.x=element_blank()) +
+  theme(axis.ticks.x=element_blank()) +
+  theme(axis.title.x = element_blank()) +
+  ylab("Concentration (µM)") +
+  ggtitle("12-oxoDCA/7-oxoCDCA/6-oxoHDCA+5")
+
+#stitch together and save as pdf
+oxoDCA_bar / presence_hm
+
+ggsave("figures/12-oxoDCA5_upsetplot.pdf", height=10, width=10, useDingbats=F)
+```
+
+
+###SANDBOX
+```{r, eval=FALSE, echo=FALSE}
+
+BA_long %>%
+  filter(!Group %in% c("JEB00356", "JEB00054")) %>%
+  filter(FeatureID=="3-oxoLCA+5") %>%
+  mutate(Group=factor(Group, levels=levels(grmem$Group))) %>%
+  ggplot(aes(x=Group, y=Concentration_uM)) +
+  stat_summary(geom="bar") +
+  stat_summary(geom="errorbar", width=0, fun.data = mean_se) +
+  theme(axis.text.x=element_text(angle=45, hjust=1)) +
+  theme(axis.text.x=element_blank()) +
+  theme(axis.ticks.x=element_blank()) +
+  theme(axis.title.x = element_blank()) +
+  ylab("Concentration (µM)")
+
+```
+
+
+
+
+
+
+
+
+#written by ben - save for reference
+```{r, eval=FALSE, echo=FALSE}
+# Filter Tree to contain tips from these experiments
+
+straintree <- read.tree("/data/shared_resources/genomes/faas_phylophlan/RAxML_bestTree.faas_refined.tre")
+
+filtered_tree_k <- drop.tip(straintree, straintree$tip.label[!straintree$tip.label %in% BA_long$Group])
+```
+
+```{r, eval=FALSE, echo=FALSE}
+curves_k <- summary_curves_k %>%
+  mutate(ID = paste0(StrainID, "-", Species))  %>%
+  arrange(factor(StrainID, levels = filtered_tree_k$tip.label)) %>%
+  filter(stat %in% c("art_k_fc","hcq_k_fc")) %>%
+  dplyr::select(ID, stat, value) %>%
+  pivot_wider(id_cols = ID, names_from = stat, values_from = value) %>%
+  column_to_rownames("ID")
+```
+
+```{r, eval=FALSE, echo=FALSE}
+## Assign New Tip Labels
+new_tiplabels_k <- summary_curves_k %>%
+  filter(StrainID %in% filtered_tree_k$tip.label) %>%
+  mutate(ID = paste0(StrainID, "-", Species))  %>%
+  arrange(factor(StrainID, levels = filtered_tree_k$tip.label)) %>%
+  dplyr::select(ID, Species) %>%
+  distinct() %>%
+  pull(ID)
+filtered_tree_k$tip.label <- new_tiplabels_k
+```
+
+```{r, eval=FALSE, echo=FALSE}
+# Generate Tip Metadata
+  mutate(ID = paste0(StrainID, "-", Species))  %>%
+  filter(!StrainID %in% problem_taxa) %>%
+  filter(ID %in% filtered_tree_k$tip.label) %>%
+  dplyr::select(ID, Phylum, Species) %>%
+  distinct() %>%
+  arrange(factor(ID, levels = filtered_tree_k$tip.label)) %>%
+  separate(Species, c("Genus","Spec"),remove = FALSE) %>%
+  column_to_rownames("ID")
+```
+
+```{r, eval=FALSE, echo=FALSE}
+# Tree with Fold Change and Circular Tiles
+q2r_palette <- c("blue4", "olivedrab", "firebrick", "gold",
+        "darkorchid", "steelblue2", "chartreuse1", "aquamarine")
+p <- ggtree(filtered_tree_k, layout="circular")
+p2 <- gheatmap(p, data = curves_k, offset = .25, width=0.2, low = "white", high = "darkred", color = "white", colnames = TRUE, font.size=3, colnames_position= "top", colnames_angle = 0, colnames_offset_y = 0, hjust = 0) + scale_fill_gradient2(na.value = "gray90", high = "darkred", low = "darkblue",name = "log2 Fold Change k (log2(Drug/Veh))") + xlim(NA,5)
+p3 <- p2 + new_scale_fill()
+p4 <- gheatmap(p3, tip_metadata %>% dplyr::select(Phylum) %>% filter(!Phylum %in% c("NA","Unknown")), offset=0, width=.1,
+               colnames_angle=95, colnames_offset_y = .25) +
+    scale_fill_manual(values = q2r_palette, na.value = "gray90", name = "Phylum")
+p4
+ggsave(paste0("Figures/heatmap_tree_k_fc_circ_tiles.pdf"), width=10, height=10, useDingbats=F)
+```
+
+
+
+
+
+
+
+
+
+
+
+#written by jordan - save for reference
+```{r, eval=FALSE, echo=FALSE}
+
+datmat<-
+  mergeddata %>%
+  filter(!grepl("Group", Group)) %>%
+  dplyr::select(Analyte, SampleID, Concentration) %>%
+  pivot_wider(names_from = SampleID, values_from = Concentration) %>%
+  as.data.frame() %>%
+  column_to_rownames("Analyte")
+
+#QC Needed!
+
+
+datmat<-datmat[rowSums(datmat)>0,]
+
+datmat<-
+datmat %>%
+  rownames_to_column("Analyte") %>%
+  pivot_longer(!Analyte, names_to = "SampleID", values_to="Concentration") %>%
+  left_join(
+        
+        datmat %>%
+          rownames_to_column("Analyte") %>%
+          pivot_longer(!Analyte, names_to = "SampleID", values_to="Concentration") %>%
+          group_by(Analyte) %>%
+          filter(Concentration==min_nonzero(Concentration)) %>%
+          ungroup() %>%
+          dplyr::select(Analyte, MinConcentration=Concentration) %>%
+          distinct()
+  ) %>%
+  mutate(log2Conc=log2(Concentration + (2/3*(MinConcentration)))) %>%
+  dplyr::select(Analyte, SampleID, log2Conc) %>%
+  pivot_wider(names_from = SampleID, values_from = log2Conc)
+
+pc<-
+datmat %>%
+  column_to_rownames("Analyte") %>%
+  t() %>%
+  prcomp()
+
+biplot(pc)
+
+
+pc$x %>%
+  as.data.frame() %>%
+  rownames_to_column("StrainID") %>%
+  separate(StrainID, c("StrainID", "Replicate"), sep="_") %>%
+  ggplot(aes(x=PC1, y=PC2, color=StrainID)) +
+  geom_point() +
+  geom_line(aes(group=StrainID))
+
+
+
+datmat %>%
+  pivot_longer(!Analyte) %>%
+  separate(name, c("StrainID", "Replicate"), sep="_") %>%
+  filter(Analyte=="TCA") %>%
+  ggplot(aes(x=StrainID, y=value)) +
+  geom_point() +
+  theme(axis.text.x=element_text(angle=45, hjust=1)) +
+  facet_wrap(~Analyte, scales="free")
+
+
+
+datmat %>%
+  pivot_longer(!Analyte) %>%
+  separate(name, c("StrainID", "Replicate"), sep="_") %>%
+  filter(Analyte=="TDCA") %>%
+  ggplot(aes(x=StrainID, y=value)) +
+  geom_point() +
+  theme(axis.text.x=element_text(angle=45, hjust=1)) +
+  facet_wrap(~Analyte, scales="free")
+
+pdf("skim.pdf", height=8, width=12, useDingbats=F)
+for (analyte in datmat$Analyte){
+ p<-
+   datmat %>%
+  pivot_longer(!Analyte) %>%
+  separate(name, c("StrainID", "Replicate"), sep="_") %>%
+  filter(Analyte==analyte) %>%
+  ggplot(aes(x=StrainID, y=value, color=StrainID)) +
+   stat_summary(geom="errorbar", width=0.2) +
+   stat_summary(geom="point") +
+  #geom_jitter(width=0.2, heigh=0) +
+  theme(axis.text.x=element_text(angle=45, hjust=1)) +
+  facet_wrap(~Analyte, scales="free") +
+   theme(legend.position = "none")
+ print(p)
+}
+dev.off()
+
+datmat %>%
+  pivot_longer(!Analyte) %>%
+  separate(name, c("StrainID", "Replicate"), sep="_") %>%
+  filter(Analyte %in% c("TCA","12-oxoDCA+5")) %>%
+  mutate(Analyte=factor(Analyte, levels=c("TCA","12-oxoDCA+5"))) %>%
+  ggplot(aes(x=StrainID, y=2^value)) +
+  stat_summary(geom="errorbar", width=0.6) +
+  stat_summary(geom="point") +
+  facet_grid(Analyte~., scales="free") +
+  theme(axis.text.x=element_text(angle=45, hjust=1)) +
+  xlab("") +
+  ylab("Bile Acid Concentration (µM)")
+ggsave("prelim_interest.pdf", height=3, width=4, useDingbats=F)
+
+############################
+
+dat<-read_csv("230127_BA_sFMT_invitro_ConcData.csv")
+groups<-read_excel("/home/msk5737/BileAcids/221211_BA_sFMT_invitro/220111_BA_sFMT_invitro_samplemetadata.xlsx", sheet = 3)
+
+
+hm<-
+  groups %>% 
+  t() %>%
+  as.data.frame() %>%
+  rownames_to_column("Group") %>%
+  pivot_longer(!Group) %>%
+  dplyr::select(Group, StrainID=value) %>%
+  filter(!is.na(StrainID)) %>%
+  bind_rows(
+    tibble(Group=groups$Pool, StrainID=groups$Pool)
+  )
+
+
+hm<-
+hm %>% 
+  mutate(jnk=1) %>% 
+  pivot_wider(names_from = Group, values_from = "jnk", values_fill = 0) %>% bind_cols(., tibble(Sterile=0)) %>% 
+  pivot_longer(!StrainID, names_to = "Group", values_to = "Present") %>%
+  mutate(Group=factor(Group, levels=c("Sterile", grep("^JEB", unique(hm$Group), value=TRUE), "Pool", grep("^Group", unique(hm$Group), value=TRUE))))
+
+
+pres<-
+hm %>%
+  ggplot(aes(x=Group, y=StrainID, fill=factor(Present))) +
+  geom_tile() +
+  theme(axis.text.x=element_text(angle=45, hjust=1)) +
+  scale_fill_manual(values=c("white","grey50")) +
+  theme(legend.position="none") +
+  theme(axis.text.x=element_blank()) +
+  theme(axis.ticks.x=element_blank())
+
+metab<-
+dat %>%
+  filter(!Group %in% c("JEB00356", "JEB00054")) %>%
+  filter(FeatureID=="12-oxoDCA/7-oxoCDCA/6-oxoHDCA+5") %>%
+  mutate(Group=factor(Group, levels=levels(hm$Group))) %>%
+  ggplot(aes(x=Group, y=Concentration_uM)) +
+  stat_summary(geom="bar") +
+  stat_summary(geom="errorbar", width=0, fun.data = mean_se) +
+  theme(axis.text.x=element_text(angle=45, hjust=1)) +
+  theme(axis.text.x=element_blank()) +
+  theme(axis.ticks.x=element_blank()) +
+  theme(axis.title.x = element_blank()) +
+  ylab("Concentration (µM)")
+
+
+
+
+metab / pres
+ggsave("testplot.pdf", height=5, width=4)
+
+
+preds<-
+  hm %>%
+  filter(grepl("Group", Group)) %>%
+  pivot_wider(names_from = "StrainID", values_from = "Present") %>%
+  as.data.frame() %>%
+  column_to_rownames("Group")
+
+response<-
+dat %>%
+  filter(!Group %in% c("JEB00356", "JEB00054")) %>%v
+  filter(FeatureID=="12-oxoDCA/7-oxoCDCA/6-oxoHDCA+5") %>%
+  filter(grepl("Group", Group)) %>%
+  group_by(Group) %>%
+  summarize(Concentration_uM=mean(Concentration_uM))
+  
+preds<-preds[response$Group,]
+
+
+fit<-randomForest::randomForest(preds, response$Concentration_uM, importance=TRUE)
+
+fit$importance %>%
+  as.data.frame() %>%
+  rownames_to_column("StrainID") %>%
+  arrange(desc(`%IncMSE`))
+
+
+```

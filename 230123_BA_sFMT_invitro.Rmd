@@ -23,7 +23,7 @@ knitr::opts_chunk$set(echo = TRUE)
 ```
 
 # Set up environment
-```{r, echo=FALSE}
+```{r, echo=FALSE, message=FALSE}
 library(data.table)
 library(tidyverse)
 library(readxl)
@@ -44,10 +44,10 @@ setwd("/home/msk5737/BileAcids/221211_BA_sFMT_invitro/")
 
 ```
 
-## Read in raw data make data tables
+# Read in raw data make data tables
 
-# Read in the raw data and append sample and BA metadata
-```{r}
+## Read in the raw data and append sample and BA metadata
+```{r, message=FALSE, warning=FALSE}
 
 #read in raw data
 Input<-readxl::excel_sheets("220117_BA_sFMT_invitro_QUAN_Short.XLS")
@@ -104,8 +104,8 @@ data <-
 
 ```
 
-# Make cal curves and quantitate BAs
-```{r}
+## Make cal curves and quantitate BAs
+```{r, message=FALSE, warning=FALSE}
 #make a table of cals and their concentrations
 CalConc<-tibble(Filename=paste0("cal",1:10), StdConc=c(0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10))
 
@@ -174,8 +174,8 @@ mergeddata<-
   mutate(SampleID=paste(Group,ReplicateNum, sep="_"))
 ```
 
-# Clean up the dataset to only show concentration and log2conc
-```{r}
+## Clean up the dataset to only show concentration and log2conc
+```{r, message=FALSE, warning=FALSE}
 
 #combine coeluters
 mergeddata <- 
@@ -249,15 +249,15 @@ BAorderRev <-
 write_csv(BA_long, "230127_BA_sFMT_invitro_ConcData.csv")
 
 #save an extra file of just JEB00356 for jingcheng
-#data_clean %>% 
-#  filter(Group == "JEB00356") %>% 
+#BA_long %>% 
+#  filter(Group %in% c("JEB00356", "Sterile")) %>% 
 #  write_csv(., "JEB00356_BileAcids.csv")
 
 
 ```
 
 ## What are the most abundant bile acids?
-```{r}
+```{r message=FALSE, warning=FALSE}
 BA_long %>%
   group_by(FeatureID) %>% 
   filter(!is.na(Concentration_uM)) %>% 
@@ -277,9 +277,9 @@ BA_long %>%
   theme(axis.text.x = element_text(angle = 45,hjust = 1))
 ```
 
-## Make some exploratory figures - PCA, biplot, indiv conc plots
+# Make some exploratory figures - PCA, biplot, indiv conc plots
 
-#biplot and skim data
+##biplot and skim data
 ```{r, eval=FALSE}
 pc<-
 BA_wide %>%
@@ -356,7 +356,7 @@ ggsave("prelim_interest.pdf", height=3, width=4, useDingbats=F)
 
 ```
 
-#heatmaps and bubble plots
+##heatmaps and bubble plots
 ```{r}
 
 logBA_StBaseline <-
@@ -447,7 +447,7 @@ ggsave("figures/BAbubblemap_log2fc_groups.pdf", height=10, width=25, useDingbats
 
 ```
 
-#PCA
+##PCA
 ```{r}
 BA_PCA<-
   BA_long %>%
@@ -480,8 +480,8 @@ BA_PCA$x %>%
   theme_q2r()
 ```
 
-## Phylogeny tree
-# make a tree
+# Phylogeny tree
+## make a tree
 ```{r}
 straintree <- read.tree("/data/shared_resources/genomes/faas_phylophlan/RAxML_bestTree.faas_refined.tre")
 
@@ -492,7 +492,7 @@ sFMT_tree_k %>%
   ggtree::geom_tiplab()
 ```
 
-# correlation between distance matrices (metabolite vs cophenetic)
+## correlation between distance matrices (metabolite vs cophenetic)
 ```{r}
 #pulling euclidean distance (cophenetic distance)
 
@@ -522,7 +522,7 @@ cor(as.vector(BA_PCA_dist), as.vector(BA_cophenetic))
 
 ```
 
-## BA labeling
+# BA labeling
 ```{r}
 
 BA_long_labelled <-
@@ -540,10 +540,10 @@ BA_long_unlabelled <-
 ```
 
 
-##Groups data
+#Groups data
 I identified 12-oxoDCA to be an interesting target because it is only produced by the pool but not by individual strains
 
-#random forest to identify the important strains in production of 12-oxoDCA+5
+##random forest to identify the important strains in production of 12-oxoDCA+5
 ```{r}
 #read in the identifiers for the groups - strain members in each group
 groups<-read_excel("/home/msk5737/BileAcids/221211_BA_sFMT_invitro/220111_BA_sFMT_invitro_samplemetadata.xlsx", sheet = 3)
@@ -578,7 +578,7 @@ RFpred <-
   column_to_rownames("Group")
 
 #set response variable for random forest
-RFresp <-
+RFresp_12oxoDCA5 <-
 BA_long %>%
   filter(!Group %in% c("JEB00356", "JEB00054")) %>%
   filter(FeatureID=="12-oxoDCA/7-oxoCDCA/6-oxoHDCA+5") %>%
@@ -586,21 +586,21 @@ BA_long %>%
   group_by(Group) %>%
   summarize(Concentration_uM=mean(Concentration_uM))
   
-RFpred <- 
-  RFpred[RFresp$Group,]
+RFpred_12oxoDCA5 <- 
+  RFpred[RFresp_12oxoDCA5$Group,]
 
 #run random forest
-RFfit <- 
-  randomForest::randomForest(RFpred, RFresp$Concentration_uM, importance=TRUE)
+RFfit_12oxoDCA5 <- 
+  randomForest::randomForest(RFpred_12oxoDCA5, RFresp_12oxoDCA5$Concentration_uM, importance=TRUE)
 
 ```
 
-# make an upset plot
+## make an upset plot
 ```{r}
 
 #order the strains in the order of importance for presence of 12-oxoDCA+5
 ImpOrder <- 
-  RFfit$importance %>%
+  RFfit_12oxoDCA5$importance %>%
   as.data.frame() %>%
   rownames_to_column("StrainID") %>%
   arrange(desc(`%IncMSE`))
@@ -620,7 +620,7 @@ grmem %>%
   theme(axis.ticks.x=element_blank())
 
 #make the top portion of the upset plot (bar plot)
-oxoDCA_bar<-
+oxoDCA5_bar<-
 BA_long %>%
   filter(!Group %in% c("JEB00356", "JEB00054")) %>%
   filter(FeatureID=="12-oxoDCA/7-oxoCDCA/6-oxoHDCA+5") %>%
@@ -629,21 +629,42 @@ BA_long %>%
   stat_summary(geom="bar") +
   stat_summary(geom="errorbar", width=0, fun.data = mean_se) +
   theme(axis.text.x=element_text(angle=45, hjust=1)) +
-  theme(axis.text.x=element_blank()) +
+  #theme(axis.text.x=element_blank()) +
   theme(axis.ticks.x=element_blank()) +
   theme(axis.title.x = element_blank()) +
   ylab("Concentration (µM)") +
   ggtitle("12-oxoDCA/7-oxoCDCA/6-oxoHDCA+5")
 
 #stitch together and save as pdf
-oxoDCA_bar / presence_hm
+oxoDCA5_bar / presence_hm
 
 ggsave("figures/12-oxoDCA5_upsetplot.pdf", height=10, width=10, useDingbats=F)
+
+#look at unlabeled 12-oxoDCA
 ```
 
 
-###SANDBOX
+#SANDBOX
 ```{r, eval=FALSE, echo=FALSE}
+
+RFresp_3oxoLCA5 <-
+BA_long %>%
+  filter(!Group %in% c("JEB00356", "JEB00054")) %>%
+  filter(FeatureID=="3-oxoLCA+5") %>%
+  filter(grepl("Group", Group)) %>%
+  group_by(Group) %>%
+  summarize(Concentration_uM=mean(Concentration_uM))
+  
+RFpred_3oxoLCA5 <- 
+  RFpred[RFresp_3oxoLCA5$Group,]
+
+RFfit_3oxoLCA5 <- 
+  randomForest::randomForest(RFpred_3oxoLCA5, RFresp_3oxoLCA5$Concentration_uM, importance=TRUE)
+
+RFfit_3oxoLCA5$importance %>%
+  as.data.frame() %>%
+  rownames_to_column("StrainID") %>%
+  arrange(desc(`%IncMSE`))
 
 BA_long %>%
   filter(!Group %in% c("JEB00356", "JEB00054")) %>%
@@ -653,11 +674,62 @@ BA_long %>%
   stat_summary(geom="bar") +
   stat_summary(geom="errorbar", width=0, fun.data = mean_se) +
   theme(axis.text.x=element_text(angle=45, hjust=1)) +
-  theme(axis.text.x=element_blank()) +
-  theme(axis.ticks.x=element_blank()) +
+  #theme(axis.text.x=element_blank()) +
+  #theme(axis.ticks.x=element_blank()) +
   theme(axis.title.x = element_blank()) +
   ylab("Concentration (µM)")
 
+RFresp_12oxoDCA <-
+BA_long %>%
+  filter(!Group %in% c("JEB00356", "JEB00054")) %>%
+  filter(FeatureID=="12-oxoDCA/7-oxoCDCA/6-oxoHDCA") %>%
+  filter(grepl("Group", Group)) %>%
+  group_by(Group) %>%
+  summarize(Concentration_uM=mean(Concentration_uM))
+  
+RFpred_12oxoDCA <- 
+  RFpred[RFresp_12oxoDCA$Group,]
+
+RFfit_12oxoDCA <- 
+  randomForest::randomForest(RFpred_12oxoDCA, RFresp_12oxoDCA$Concentration_uM, importance=TRUE)
+
+RFfit_12oxoDCA$importance %>%
+  as.data.frame() %>%
+  rownames_to_column("StrainID") %>%
+  arrange(desc(`%IncMSE`))
+
+BA_long %>%
+  filter(!Group %in% c("JEB00356", "JEB00054")) %>%
+  filter(FeatureID=="CDCA+5") %>%
+  mutate(Group=factor(Group, levels=levels(grmem$Group))) %>%
+  ggplot(aes(x=Group, y=Concentration_uM)) +
+  stat_summary(geom="bar") +
+  stat_summary(geom="errorbar", width=0, fun.data = mean_se) +
+  theme(axis.text.x=element_text(angle=45, hjust=1)) +
+  #theme(axis.text.x=element_blank()) +
+  #theme(axis.ticks.x=element_blank()) +
+  theme(axis.title.x = element_blank()) +
+  ylab("Concentration (µM)")
+
+BA_log2FC_sb <-
+  BA_log2FC %>% 
+  filter(FeatureID == "DCA")
+
+tukey <-
+  BA_long %>%
+  filter(!grepl("Group", Group)) %>% 
+  group_by(FeatureID) %>%
+  filter(FeatureID == "DCA") %>% 
+  do(
+  aov(log2Conc~Group, data=.) %>%
+  TukeyHSD() %>%
+  broom::tidy()
+  ) %>%
+  filter(grepl("Sterile", contrast)) %>% 
+  #filter(adj.p.value < 0.15) %>%
+  dplyr::select(FeatureID, contrast, adj.p.value)
+
+#make a change for git
 ```
 
 

@@ -1,5 +1,4 @@
-### BileAcids
-This project aims to dissect the bile acid metabolism by the human gut microbiome.
+This repo is for the BA_sFMT_invitro experiment run on Dec 11, 2022.
 
 This repository contains the .Rmd files used for data analysis for the bile acid quantitation of sFMT invitro experiment.
 

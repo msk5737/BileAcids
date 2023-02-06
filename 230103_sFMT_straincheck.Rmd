@@ -1,0 +1,71 @@
+---
+title: "sFMT Sanger Sequencing BLAST"
+author: "Min Soo Kim"
+date: 'Run at `r format(Sys.time(), "%Y-%m-%d %H:%M")`'
+output: 
+  html_document:
+    code_folding: show
+    theme: spacelab
+    highlight: monochrome
+    fig_width: 11
+    fig_height: 8.5
+    toc: true
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,warning=F, message=F, cache = TRUE)
+```
+
+# Setup
+```{r}
+library(tidyverse)
+library(readxl)
+library(qiime2R) 
+library(phyloseq)
+library(Biostrings)
+library(dada2)
+library(dplyr)
+library(rBLAST)
+theme_set(theme_q2r())
+setwd("~/Genewiz")
+#sessionInfo()
+```
+
+# BLASTing the sanger seq fasta against the lab database
+```{bash, eval=FALSE}
+conda activate blast_2.12.0
+#cd Genewiz/
+
+# make blast db using lab library
+makeblastdb \
+-in Lab_database/lab_sequence_082922.fasta \
+-title “Bisanz_Lab_Strains” \
+-dbtype nucl
+
+# perform sequence alignment at a threshold of 97% identity
+blastn \
+-query ~/BileAcids/221211_BA_sFMT_invitro/221230_sFMT_genewiz_16S.fasta \
+-db Lab_database/lab_sequence_082922.fasta \
+-out ~/BileAcids/221211_BA_sFMT_invitro/230103_sFMT_blast.txt \
+-num_threads 18 \
+-outfmt "6 qseqid sseqid sstrand qlen slen nident pident qstart qend sstart send length mismatch evalue"
+```
+
+# BLAST Result
+```{r}
+sFMT_blast <- read_tsv("~/BileAcids/221211_BA_sFMT_invitro/230103_sFMT_blast.txt",col_names = c("FeatureID", "Lab Accession", "Strand", "Query_Length", "Subject_Length", "N_identities", "Percent_Identity", "Query_Start", "Query_end", "Subject_Start", "Subject_End", "Alignment_Length", "NMismatch", "evalue")) %>% 
+  filter(FeatureID==`Lab Accession`)
+
+sFMT_blast %>% interactive_table()
+```
+
+```{r}
+
+BSH_blast<- read_tsv("BSH_blastp_proteinlevel.txt",col_names = c("FeatureID", "Lab Accession", "Strand", "Query_Length", "Subject_Length", "N_identities", "Percent_Identity", "Query_Start", "Query_end", "Subject_Start", "Subject_End", "Alignment_Length", "NMismatch", "evalue")) %>%
+  mutate(Protein="BSH") %>%
+  mutate(Subset="BSH") %>%
+  separate("Lab Accession", into = c("LabID","proteinID"),sep="_")
+
+```
+

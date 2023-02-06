@@ -1,9 +1,7 @@
-# BileAcids
+### BileAcids
 This project aims to dissect the bile acid metabolism by the human gut microbiome.
 
 This repository contains the .Rmd files used for data analysis for the bile acid quantitation of sFMT invitro experiment.
-
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Experiment details:
 

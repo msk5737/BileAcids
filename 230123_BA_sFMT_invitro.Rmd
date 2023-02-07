@@ -668,7 +668,7 @@ RFfit_3oxoLCA5$importance %>%
 
 BA_long %>%
   filter(!Group %in% c("JEB00356", "JEB00054")) %>%
-  filter(FeatureID=="3-oxoLCA+5") %>%
+  filter(FeatureID=="DCA") %>%
   mutate(Group=factor(Group, levels=levels(grmem$Group))) %>%
   ggplot(aes(x=Group, y=Concentration_uM)) +
   stat_summary(geom="bar") +
@@ -698,9 +698,47 @@ RFfit_12oxoDCA$importance %>%
   rownames_to_column("StrainID") %>%
   arrange(desc(`%IncMSE`))
 
+RFresp_DCA <-
+BA_long %>%
+  filter(!Group %in% c("JEB00356", "JEB00054")) %>%
+  filter(FeatureID=="DCA") %>%
+  filter(grepl("Group", Group)) %>%
+  group_by(Group) %>%
+  summarize(Concentration_uM=mean(Concentration_uM))
+  
+RFpred_DCA <- 
+  RFpred[RFresp_DCA$Group,]
+
+RFfit_DCA <- 
+  randomForest::randomForest(RFpred_DCA, RFresp_DCA$Concentration_uM, importance=TRUE)
+
+RFfit_DCA$importance %>%
+  as.data.frame() %>%
+  rownames_to_column("StrainID") %>%
+  arrange(desc(`%IncMSE`))
+
+RFresp_CDCA <-
 BA_long %>%
   filter(!Group %in% c("JEB00356", "JEB00054")) %>%
   filter(FeatureID=="CDCA+5") %>%
+  filter(grepl("Group", Group)) %>%
+  group_by(Group) %>%
+  summarize(Concentration_uM=mean(Concentration_uM))
+  
+RFpred_CDCA <- 
+  RFpred[RFresp_CDCA$Group,]
+
+RFfit_CDCA <- 
+  randomForest::randomForest(RFpred_CDCA, RFresp_CDCA$Concentration_uM, importance=TRUE)
+
+RFfit_CDCA$importance %>%
+  as.data.frame() %>%
+  rownames_to_column("StrainID") %>%
+  arrange(desc(`%IncMSE`))
+
+BA_long %>%
+  filter(!Group %in% c("JEB00356", "JEB00054")) %>%
+  filter(FeatureID=="DCA+5") %>%
   mutate(Group=factor(Group, levels=levels(grmem$Group))) %>%
   ggplot(aes(x=Group, y=Concentration_uM)) +
   stat_summary(geom="bar") +
@@ -715,22 +753,20 @@ BA_log2FC_sb <-
   BA_log2FC %>% 
   filter(FeatureID == "DCA")
 
-tukey <-
+tukey_DCA5 <-
   BA_long %>%
   filter(!grepl("Group", Group)) %>% 
   group_by(FeatureID) %>%
-  filter(FeatureID == "DCA") %>% 
+  filter(FeatureID == "DCA+5") %>% 
   do(
   aov(log2Conc~Group, data=.) %>%
   TukeyHSD() %>%
   broom::tidy()
   ) %>%
   filter(grepl("Sterile", contrast)) %>% 
-  #filter(adj.p.value < 0.15) %>%
+  filter(adj.p.value < 0.05) %>%
   dplyr::select(FeatureID, contrast, adj.p.value)
 
-#make a change for git
-#one more change
 ```
 
 
